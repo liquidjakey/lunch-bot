@@ -7,8 +7,11 @@ import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
+import ai
 import db
-from weather import weather_text
+import places
+from prompts import build_prompt_v3
+from weather import describe, get_weather, weather_text
 
 load_dotenv()
 URL = f"https://api.telegram.org/bot{os.getenv('TELEGRAM_TOKEN')}"
@@ -17,6 +20,7 @@ MENUS = ["라면", "햄버거", "마라탕", "샐러드"]
 
 app = FastAPI()  # 웹 서버 앱
 conn = db.connect()  # 식사 기록 DB (lunch.db)
+PLACES = places.load_places("places_sample.csv")  # 캠퍼스 주변 식당 목록
 
 
 @app.post("/")  # 텔레그램이 메시지(JSON)를 이 주소로 POST 해 준다 (webhook)
@@ -30,12 +34,11 @@ def webhook(body: dict):
     text = message["text"]           # 보낸 글자 (JSON의 message › text)
     print("[받음]", text)
 
-
     # /로 시작하면 명령, 아니면 메아리
     if text == "/start":
         output = "안녕하세요! 오늘 뭐 먹지? 봇입니다. /help 로 사용법을 보세요."
     elif text == "/help":
-        output = "/lunch 점심 메뉴 하나\n/lotto 로또 번호 6개\n/weather 지금 캠퍼스 날씨\n그 밖의 말은 따라 해요"
+        output = "/lunch 점심 메뉴 하나\n/lotto 로또 번호 6개\n/weather 지금 캠퍼스 날씨\n그 밖의 말은 AI가 답해요"
     elif text == "/lunch":
         output = random.choice(MENUS)
     elif text == "/lotto":
@@ -57,7 +60,12 @@ def webhook(body: dict):
     elif text.startswith("/"):
         output = "모르는 명령이에요. /help 를 보내 보세요."
     else:
-        output = text  # 메아리
+        # 날씨 · 최근 먹은 것 · 질문에 맞는 식당을 지침에 담아 GPT가 목록 안에서만 답하게 한다
+        w = get_weather()  # 실패하면 None
+        weather = describe(w) if w else "알 수 없음"
+        found = places.search(text, PLACES)
+        system = build_prompt_v3(weather, db.recent_meals(conn), found)
+        output = ai.ask_ai(system, text)
 
     requests.get(f"{URL}/sendMessage", params={"chat_id": chat_id, "text": output})  # 답장 보내기
     print("[보냄]", output)
